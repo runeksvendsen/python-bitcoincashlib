@@ -29,6 +29,7 @@ import struct
 
 import bitcoin.core
 import bitcoin.core._bignum
+from bitcoin.core.serialize import VarIntSerializer
 
 MAX_SCRIPT_SIZE = 10000
 MAX_SCRIPT_ELEMENT_SIZE = 520
@@ -777,6 +778,7 @@ class CScript(bytes):
 SIGHASH_ALL = 1
 SIGHASH_NONE = 2
 SIGHASH_SINGLE = 3
+SIGHASH_FORKID = 0x40
 SIGHASH_ANYONECANPAY = 0x80
 
 def FindAndDelete(script, sig):
@@ -902,7 +904,7 @@ def RawSignatureHash(script, txTo, inIdx, hashtype):
     return (hash, None)
 
 
-def SignatureHash(script, txTo, inIdx, hashtype):
+def SignatureHashBtc(script, txTo, inIdx, hashtype):
     """Calculate a signature hash
 
     'Cooked' version that checks if inIdx is out of bounds - this is *not*
@@ -913,6 +915,53 @@ def SignatureHash(script, txTo, inIdx, hashtype):
     if err is not None:
         raise ValueError(err)
     return h
+
+def SignatureHash(script, txTo, inIdx, hashtype, amount):
+    if not (hashtype & SIGHASH_FORKID):
+        return SignatureHashBtc(script, txTo, inIdx, hashtype)
+    else:
+        return SignatureHashForkId(script, txTo, inIdx, hashtype, amount)
+
+
+def SignatureHashForkId(script, txTo, inIdx, hashtype, amount):
+    hashPrevouts = None
+    hashSequence = None
+    hashOutputs = None
+
+    if not (hashtype & SIGHASH_ANYONECANPAY):
+        serialize_prevouts = bytes()
+        for i in txTo.vin:
+            serialize_prevouts += i.prevout.serialize()
+        hashPrevouts = bitcoin.core.Hash(serialize_prevouts)   # uint256_from_str(hash256(serialize_prevouts))
+
+    if (not (hashtype & SIGHASH_ANYONECANPAY) and (hashtype & 0x1f) != SIGHASH_SINGLE and (hashtype & 0x1f) != SIGHASH_NONE):
+        serialize_sequence = bytes()
+        for i in txTo.vin:
+            serialize_sequence += struct.pack("<I", i.nSequence)
+        hashSequence = bitcoin.core.Hash(serialize_sequence)   # uint256_from_str(hash256(serialize_sequence))
+
+    if ((hashtype & 0x1f) != SIGHASH_SINGLE and (hashtype & 0x1f) != SIGHASH_NONE):
+        serialize_outputs = bytes()
+        for o in txTo.vout:
+            serialize_outputs += o.serialize()
+        hashOutputs = bitcoin.core.Hash(serialize_outputs)
+    elif ((hashtype & 0x1f) == SIGHASH_SINGLE and inIdx < len(txTo.vout)):
+        serialize_outputs = txTo.vout[inIdx].serialize()
+        hashOutputs = bitcoin.core.Hash(serialize_outputs)
+
+    ss = bytes()
+    ss += struct.pack("<i", txTo.nVersion)
+    ss += hashPrevouts
+    ss += hashSequence
+    ss += txTo.vin[inIdx].prevout.serialize()
+    ss += ( VarIntSerializer.serialize(len(script)) + script )
+    ss += struct.pack("<q", amount)
+    ss += struct.pack("<I", txTo.vin[inIdx].nSequence)
+    ss += hashOutputs
+    ss += struct.pack("<i", txTo.nLockTime)
+    ss += struct.pack("<I", hashtype)
+
+    return bitcoin.core.Hash(ss)
 
 
 __all__ = (

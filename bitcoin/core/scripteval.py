@@ -131,7 +131,7 @@ def _CastToBool(s):
     return False
 
 
-def _CheckSig(sig, pubkey, script, txTo, inIdx, err_raiser):
+def _CheckSig(sig, pubkey, script, txTo, inIdx, prevOutVal, err_raiser):
     key = bitcoin.core.key.CECKey()
     key.set_pubkey(pubkey)
 
@@ -148,11 +148,11 @@ def _CheckSig(sig, pubkey, script, txTo, inIdx, err_raiser):
     # imply the scriptSig being checked doesn't correspond to a valid txout -
     # that should cause other validation machinery to fail long before we ever
     # got here.
-    (h, err) = RawSignatureHash(script, txTo, inIdx, hashtype)
+    h = SignatureHash(script, txTo, inIdx, hashtype, prevOutVal)
     return key.verify(h, sig)
 
 
-def _CheckMultiSig(opcode, script, stack, txTo, inIdx, flags, err_raiser, nOpCount):
+def _CheckMultiSig(opcode, script, stack, txTo, inIdx, flags, prevOutVal, err_raiser, nOpCount):
     i = 1
     if len(stack) < i:
         err_raiser(MissingOpArgumentsError, opcode, stack, i)
@@ -195,7 +195,7 @@ def _CheckMultiSig(opcode, script, stack, txTo, inIdx, flags, err_raiser, nOpCou
         sig = stack[-isig]
         pubkey = stack[-ikey]
 
-        if _CheckSig(sig, pubkey, script, txTo, inIdx, err_raiser):
+        if _CheckSig(sig, pubkey, script, txTo, inIdx, prevOutVal, err_raiser):
             isig += 1
             sigs_count -= 1
 
@@ -365,7 +365,7 @@ def _CheckExec(vfExec):
     return True
 
 
-def _EvalScript(stack, scriptIn, txTo, inIdx, flags=()):
+def _EvalScript(stack, scriptIn, txTo, inIdx, prevOutVal, flags=()):
     """Evaluate a script
 
     """
@@ -486,7 +486,7 @@ def _EvalScript(stack, scriptIn, txTo, inIdx, flags=()):
 
             elif sop == OP_CHECKMULTISIG or sop == OP_CHECKMULTISIGVERIFY:
                 tmpScript = CScript(scriptIn[pbegincodehash:])
-                _CheckMultiSig(sop, tmpScript, stack, txTo, inIdx, flags, err_raiser, nOpCount)
+                _CheckMultiSig(sop, tmpScript, stack, txTo, inIdx, flags, prevOutVal, err_raiser, nOpCount)
 
             elif sop == OP_CHECKSIG or sop == OP_CHECKSIGVERIFY:
                 check_args(2)
@@ -500,7 +500,7 @@ def _EvalScript(stack, scriptIn, txTo, inIdx, flags=()):
                 # scriptSig and scriptPubKey are processed separately.
                 tmpScript = FindAndDelete(tmpScript, CScript([vchSig]))
 
-                ok = _CheckSig(vchSig, vchPubKey, tmpScript, txTo, inIdx,
+                ok = _CheckSig(vchSig, vchPubKey, tmpScript, txTo, inIdx, prevOutVal,
                                err_raiser)
                 if not ok and sop == OP_CHECKSIGVERIFY:
                     err_raiser(VerifyOpFailedError, sop)
@@ -715,7 +715,7 @@ def _EvalScript(stack, scriptIn, txTo, inIdx, flags=()):
                               flags=flags)
 
 
-def EvalScript(stack, scriptIn, txTo, inIdx, flags=()):
+def EvalScript(stack, scriptIn, txTo, inIdx, prevOutVal, flags=()):
     """Evaluate a script
 
     stack    - Initial stack
@@ -730,7 +730,7 @@ def EvalScript(stack, scriptIn, txTo, inIdx, flags=()):
     """
 
     try:
-        _EvalScript(stack, scriptIn, txTo, inIdx, flags=flags)
+        _EvalScript(stack, scriptIn, txTo, inIdx, prevOutVal, flags=flags)
     except CScriptInvalidError as err:
         raise EvalScriptError(repr(err),
                               stack=stack,
@@ -742,7 +742,7 @@ def EvalScript(stack, scriptIn, txTo, inIdx, flags=()):
 class VerifyScriptError(bitcoin.core.ValidationError):
     pass
 
-def VerifyScript(scriptSig, scriptPubKey, txTo, inIdx, flags=()):
+def VerifyScript(scriptSig, scriptPubKey, txTo, inIdx, prevOutVal, flags=()):
     """Verify a scriptSig satisfies a scriptPubKey
 
     scriptSig    - Signature
@@ -756,10 +756,10 @@ def VerifyScript(scriptSig, scriptPubKey, txTo, inIdx, flags=()):
     Raises a ValidationError subclass if the validation fails.
     """
     stack = []
-    EvalScript(stack, scriptSig, txTo, inIdx, flags=flags)
+    EvalScript(stack, scriptSig, txTo, inIdx, prevOutVal, flags=flags)
     if SCRIPT_VERIFY_P2SH in flags:
         stackCopy = list(stack)
-    EvalScript(stack, scriptPubKey, txTo, inIdx, flags=flags)
+    EvalScript(stack, scriptPubKey, txTo, inIdx, prevOutVal, flags=flags)
     if len(stack) == 0:
         raise VerifyScriptError("scriptPubKey left an empty stack")
     if not _CastToBool(stack[-1]):
@@ -780,7 +780,7 @@ def VerifyScript(scriptSig, scriptPubKey, txTo, inIdx, flags=()):
 
         pubKey2 = CScript(stack.pop())
 
-        EvalScript(stack, pubKey2, txTo, inIdx, flags=flags)
+        EvalScript(stack, pubKey2, txTo, inIdx, prevOutVal, flags=flags)
 
         if not len(stack):
             raise VerifyScriptError("P2SH inner scriptPubKey left an empty stack")
